@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+build/
+target/
+dist/
+out/
+
+# Logs and runtime files
+*.log
+*.pid
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Keep only README markdown files in the repo.
+*.md
+!**/README.md

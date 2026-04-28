@@ -1,0 +1,9 @@
+package com.personal.ai_chatbot.dto;
+
+import jakarta.validation.constraints.NotBlank;
+
+public record AdminLoginRequest(
+        @NotBlank String adminId,
+        @NotBlank String password
+) {
+}
