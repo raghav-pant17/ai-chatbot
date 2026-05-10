@@ -5,15 +5,18 @@ import {
   Bot,
   ChevronDown,
   ChevronRight,
-  ClipboardList,
   LogOut,
-  MessageCircle,
+  Minus,
+  PackageCheck,
+  Plus,
   RefreshCw,
   Send,
-  ShieldCheck,
+  ShoppingCart,
+  Store,
   Ticket,
   TicketPlus,
   UserCircle,
+  Wallet,
 } from 'lucide-react';
 import { Alert } from './components/ui/alert';
 import { Badge } from './components/ui/badge';
@@ -27,7 +30,9 @@ import { cn } from './lib/utils';
 const API_BASE_URL = 'http://localhost:8080';
 const WS_URL = `${API_BASE_URL}/ws`;
 const SEND_ENDPOINT = '/app/chat.sendMessage';
-const SUBSCRIBE_ENDPOINT = '/topic/public';
+const SEND_ADMIN_REPLY_ENDPOINT = '/app/admin.reply';
+const CUSTOMER_CHAT_QUEUE = '/user/queue/chat';
+const ADMIN_TICKET_TOPIC = '/topic/admin/tickets';
 
 function App() {
   const isAdminRoute = window.location.pathname.replace(/\/+$/, '') === '/admin';
@@ -36,11 +41,21 @@ function App() {
 
 function CustomerApp() {
   const savedSession = readSavedSession();
-  const [loginUserId, setLoginUserId] = useState(savedSession?.user?.userId || 'user-1');
+  const [authMode, setAuthMode] = useState('login');
+  const [loginUsername, setLoginUsername] = useState('demo.customer');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [signupUsername, setSignupUsername] = useState('');
+  const [signupFullName, setSignupFullName] = useState('');
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationMessage, setVerificationMessage] = useState('');
   const [user, setUser] = useState(savedSession?.user || null);
   const [token, setToken] = useState(savedSession?.token || '');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [activePage, setActivePage] = useState(savedSession?.user ? 'support' : 'shop');
 
   const [orders, setOrders] = useState([]);
   const [ordersError, setOrdersError] = useState('');
@@ -61,9 +76,19 @@ function CustomerApp() {
   const [connecting, setConnecting] = useState(false);
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
+  const [waitingForReply, setWaitingForReply] = useState(false);
   const [ticketId, setTicketId] = useState(null);
   const [ticketStatus, setTicketStatus] = useState('');
   const [conversationState, setConversationState] = useState('START');
+
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [productsError, setProductsError] = useState('');
+  const [cart, setCart] = useState({});
+  const [budget, setBudget] = useState(savedSession?.user ? userBudget(savedSession.user) : emptyBudget());
+  const [orderError, setOrderError] = useState('');
+  const [orderMessage, setOrderMessage] = useState('');
+  const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
   const clientRef = useRef(null);
   const userRef = useRef(user);
@@ -84,18 +109,25 @@ function CustomerApp() {
   }, [ticketId, selectedTicketSummaryId]);
 
   useEffect(() => {
+    fetchProducts();
+  }, []);
+
+  useEffect(() => {
+    if (!user || !token) return undefined;
     connectWebSocket();
 
     return () => {
       clientRef.current?.deactivate();
+      clientRef.current = null;
     };
-  }, []);
+  }, [user?.userId, token]);
 
   useEffect(() => {
     if (!user || !token) return;
     fetchOrders(user.userId, token);
     fetchCustomerTickets(user.userId, token);
-  }, [user, token]);
+    fetchBudget(user.userId, token);
+  }, [user?.userId, token]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -103,9 +135,9 @@ function CustomerApp() {
 
   async function login(event) {
     event.preventDefault();
-    const nextUserId = loginUserId.trim();
-    if (!nextUserId) {
-      setLoginError('Enter an existing user ID.');
+    const nextUsername = loginUsername.trim();
+    if (!nextUsername || !loginPassword) {
+      setLoginError('Enter your username and password.');
       return;
     }
 
@@ -116,11 +148,16 @@ function CustomerApp() {
       const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: nextUserId }),
+        body: JSON.stringify({ username: nextUsername, password: loginPassword }),
       });
 
       if (response.status === 401) {
-        setLoginError('No customer was found for that user ID.');
+        setLoginError('Username or password is incorrect.');
+        return;
+      }
+
+      if (response.status === 403) {
+        setLoginError('Please verify your email before logging in.');
         return;
       }
 
@@ -130,16 +167,146 @@ function CustomerApp() {
       }
 
       const data = await response.json();
-      const nextUser = {
-        userId: data.userId,
-        fullName: data.fullName,
-        email: data.email,
-      };
+      const nextUser = normalizeCustomer(data);
 
-      sessionStorage.setItem('support-chat-session', JSON.stringify({ user: nextUser, token: data.accessToken }));
+      saveCustomerSession(nextUser, data.accessToken);
       setUser(nextUser);
       setToken(data.accessToken);
+      setBudget(userBudget(nextUser));
+      setActivePage('support');
+      setLoginPassword('');
       resetConversation();
+    } catch (error) {
+      setLoginError('Could not reach the backend at http://localhost:8080.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function signup(event) {
+    event.preventDefault();
+    const payload = {
+      username: signupUsername.trim(),
+      fullName: signupFullName.trim(),
+      email: signupEmail.trim(),
+      password: signupPassword,
+    };
+
+    if (!payload.username || !payload.fullName || !payload.email || !payload.password) {
+      setLoginError('Fill in all signup fields.');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 409) {
+        setLoginError('That username or email is already in use.');
+        return;
+      }
+
+      if (response.status === 400) {
+        setLoginError('Check the signup details and use a password with at least 6 characters.');
+        return;
+      }
+
+      if (!response.ok) {
+        setLoginError('Signup failed. Check that the backend is running.');
+        return;
+      }
+
+      const data = await response.json();
+      setPendingVerificationEmail(data.email || payload.email);
+      setVerificationMessage(data.message || `Verification code sent to ${payload.email}.`);
+      setVerificationCode('');
+      setAuthMode('verify');
+      setSignupPassword('');
+      resetConversation();
+    } catch (error) {
+      setLoginError('Could not reach the backend at http://localhost:8080.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function verifyEmail(event) {
+    event.preventDefault();
+    const email = pendingVerificationEmail.trim();
+    const code = verificationCode.trim();
+
+    if (!email || !code) {
+      setLoginError('Enter the verification code from your email.');
+      return;
+    }
+
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/verify-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, code }),
+      });
+
+      if (response.status === 400) {
+        setLoginError('Verification code is invalid or expired.');
+        return;
+      }
+
+      if (!response.ok) {
+        setLoginError('Email verification failed.');
+        return;
+      }
+
+      const data = await response.json();
+      const nextUser = normalizeCustomer(data);
+
+      saveCustomerSession(nextUser, data.accessToken);
+      setUser(nextUser);
+      setToken(data.accessToken);
+      setBudget(userBudget(nextUser));
+      setActivePage('shop');
+      setVerificationCode('');
+      setPendingVerificationEmail('');
+      setVerificationMessage('');
+      resetConversation();
+    } catch (error) {
+      setLoginError('Could not reach the backend at http://localhost:8080.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function resendVerificationCode() {
+    const email = pendingVerificationEmail.trim();
+    if (!email) return;
+
+    setIsLoggingIn(true);
+    setLoginError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/resend-verification`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      if (!response.ok) {
+        setLoginError('Could not resend the verification code.');
+        return;
+      }
+
+      const data = await response.json();
+      setVerificationMessage(data.message || 'A new verification code was sent.');
+      setVerificationCode('');
     } catch (error) {
       setLoginError('Could not reach the backend at http://localhost:8080.');
     } finally {
@@ -156,12 +323,19 @@ function CustomerApp() {
     }
 
     sessionStorage.removeItem('support-chat-session');
+    clientRef.current?.deactivate();
+    clientRef.current = null;
     setUser(null);
     setToken('');
     setOrders([]);
     setOrderDetails({});
     setSelectedOrderId('');
     setExpandedOrderId('');
+    setBudget(emptyBudget());
+    setCart({});
+    setOrderError('');
+    setOrderMessage('');
+    setActivePage('shop');
     setCreatedTickets([]);
     setSelectedTicketSummaryId(null);
     resetConversation();
@@ -170,9 +344,131 @@ function CustomerApp() {
   function resetConversation() {
     setMessages([]);
     setDraft('');
+    setWaitingForReply(false);
     setTicketId(null);
     setTicketStatus('');
     setConversationState('START');
+  }
+
+  async function fetchProducts() {
+    setProductsLoading(true);
+    setProductsError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/products`);
+      if (!response.ok) {
+        setProductsError('Products could not be loaded right now.');
+        return;
+      }
+
+      const data = await response.json();
+      setProducts(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setProductsError('Could not reach the product catalog.');
+    } finally {
+      setProductsLoading(false);
+    }
+  }
+
+  async function fetchBudget(userId, accessToken) {
+    try {
+      const response = await authorizedFetch(`/api/users/${encodeURIComponent(userId)}/orders/budget`, accessToken);
+
+      if (response.status === 401) {
+        handleExpiredSession();
+        return;
+      }
+
+      if (!response.ok) return;
+
+      const data = await response.json();
+      setBudget(data);
+      setUser((currentUser) => {
+        if (!currentUser) return currentUser;
+        const nextUser = { ...currentUser, ...data };
+        saveCustomerSession(nextUser, accessToken);
+        return nextUser;
+      });
+    } catch (error) {
+      // Budget is displayed as a convenience; order creation still validates server-side.
+    }
+  }
+
+  function setCartQuantity(productId, quantity) {
+    setOrderError('');
+    setOrderMessage('');
+    setCart((previous) => {
+      const nextQuantity = Math.max(0, Math.min(9, Number(quantity) || 0));
+      const nextCart = { ...previous };
+      if (nextQuantity === 0) {
+        delete nextCart[productId];
+      } else {
+        nextCart[productId] = nextQuantity;
+      }
+      return nextCart;
+    });
+  }
+
+  async function placeOrder() {
+    if (!user || !token || isPlacingOrder) return;
+
+    const items = Object.entries(cart)
+      .filter(([, quantity]) => quantity > 0)
+      .map(([productId, quantity]) => ({ productId, quantity }));
+
+    if (!items.length) {
+      setOrderError('Select at least one item.');
+      return;
+    }
+
+    setIsPlacingOrder(true);
+    setOrderError('');
+    setOrderMessage('');
+
+    try {
+      const response = await authorizedFetch(`/api/users/${encodeURIComponent(user.userId)}/orders`, token, {
+        method: 'POST',
+        body: JSON.stringify({ items }),
+      });
+
+      if (response.status === 401) {
+        handleExpiredSession();
+        return;
+      }
+
+      if (response.status === 400) {
+        setOrderError('This cart is over your remaining budget. Remove an item and try again.');
+        await fetchBudget(user.userId, token);
+        return;
+      }
+
+      if (!response.ok) {
+        setOrderError('Order could not be placed right now.');
+        return;
+      }
+
+      const data = await response.json();
+      if (data.budget) {
+        setBudget(data.budget);
+        setUser((currentUser) => {
+          if (!currentUser) return currentUser;
+          const nextUser = { ...currentUser, ...data.budget };
+          saveCustomerSession(nextUser, token);
+          return nextUser;
+        });
+      }
+      setCart({});
+      setOrderMessage(`Order ${data.order.orderId} placed successfully.`);
+      await fetchOrders(user.userId, token);
+      setExpandedOrderId(data.order.orderId);
+      setSelectedOrderId(data.order.orderId);
+      setOrderDetails((previous) => ({ ...previous, [data.order.orderId]: data.order }));
+      setActivePage('support');
+    } catch (error) {
+      setOrderError('Could not reach the order API.');
+    } finally {
+      setIsPlacingOrder(false);
+    }
   }
 
   async function fetchOrders(userId, accessToken) {
@@ -270,6 +566,7 @@ function CustomerApp() {
       setTicketStatus(ticket.status || 'OPEN');
       setConversationState(ticket.state || 'SELECT_ITEMS');
       setSelectedTicketSummaryId(ticket.ticketId);
+      setWaitingForReply(false);
       setMessages([
         {
           id: `${Date.now()}-ticket-created`,
@@ -318,6 +615,7 @@ function CustomerApp() {
       setTicketId(detail.ticketId);
       setTicketStatus(detail.status || '');
       setConversationState(detail.state || 'START');
+      setWaitingForReply(false);
       setMessages(mapTicketMessages(detail.messages));
       await fetchCustomerTickets(user.userId, token);
     } catch (error) {
@@ -391,16 +689,18 @@ function CustomerApp() {
     setConnecting(true);
     const stompClient = new Client({
       webSocketFactory: () => new SockJS(WS_URL),
+      connectHeaders: {
+        Authorization: `Bearer ${tokenRef.current}`,
+      },
       reconnectDelay: 3000,
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
       onConnect: () => {
         setConnected(true);
         setConnecting(false);
-        stompClient.subscribe(SUBSCRIBE_ENDPOINT, (frame) => {
+        stompClient.subscribe(CUSTOMER_CHAT_QUEUE, (frame) => {
           try {
             const response = JSON.parse(frame.body);
-            if (response.userId !== userRef.current?.userId) return;
             receiveBotMessage(response);
           } catch (error) {
             console.error('Invalid chat response', error);
@@ -435,6 +735,8 @@ function CustomerApp() {
       fetchCustomerTickets(userRef.current?.userId, tokenRef.current);
       return;
     }
+
+    setWaitingForReply(false);
 
     if (response.message?.trim()) {
       setMessages((previous) => [
@@ -492,9 +794,11 @@ function CustomerApp() {
           timestamp: new Date().toISOString(),
         },
       ]);
+      setWaitingForReply(false);
       return;
     }
 
+    setWaitingForReply(true);
     clientRef.current.publish({
       destination: SEND_ENDPOINT,
       body: JSON.stringify({
@@ -511,9 +815,13 @@ function CustomerApp() {
 
   const ticketIsResolved = ticketStatus === 'RESOLVED' || conversationState === 'RESOLVED';
   const hasActiveTicket = Boolean(ticketId || selectedTicketSummaryId);
+  const cartTotal = calculateCartTotal(products, cart);
+  const cartCount = Object.values(cart).reduce((total, quantity) => total + quantity, 0);
 
   function handleExpiredSession() {
     sessionStorage.removeItem('support-chat-session');
+    clientRef.current?.deactivate();
+    clientRef.current = null;
     setUser(null);
     setToken('');
     setLoginError('Your session expired. Please log in again.');
@@ -524,31 +832,155 @@ function CustomerApp() {
       <main className="login-page">
         <Card className="login-panel" aria-labelledby="login-title">
           <CardHeader>
-            <Badge variant="outline">Customer support</Badge>
-            <CardTitle id="login-title">Support Chat</CardTitle>
-            <CardDescription>Log in with your existing e-commerce customer ID.</CardDescription>
+            <Badge variant="outline">Customer store</Badge>
+            <CardTitle id="login-title">Shop and support</CardTitle>
+            <CardDescription>Log in or create an account to order items and manage support tickets.</CardDescription>
           </CardHeader>
 
           <CardContent>
-            <form className="stack-form" onSubmit={login}>
-              <div className="field">
-                <Label htmlFor="userId">User ID</Label>
-                <Input
-                  id="userId"
-                  type="text"
-                  value={loginUserId}
-                  onChange={(event) => setLoginUserId(event.target.value)}
-                  placeholder="user-1"
-                  autoComplete="username"
-                />
-                <p className="hint">Demo user: user-1</p>
-              </div>
-              {loginError && <Alert variant="destructive">{loginError}</Alert>}
-              <Button type="submit" disabled={isLoggingIn}>
-                <UserCircle size={16} />
-                {isLoggingIn ? 'Logging in...' : 'Log in'}
-              </Button>
-            </form>
+            <div className="segmented-control" role="tablist" aria-label="Authentication options">
+              <button
+                type="button"
+                className={cn(authMode === 'login' && 'active')}
+                onClick={() => {
+                  setAuthMode('login');
+                  setLoginError('');
+                }}
+              >
+                Log in
+              </button>
+              <button
+                type="button"
+                className={cn(authMode === 'signup' && 'active')}
+                onClick={() => {
+                  setAuthMode('signup');
+                  setLoginError('');
+                }}
+              >
+                Sign up
+              </button>
+            </div>
+
+            {authMode === 'login' ? (
+              <form className="stack-form" onSubmit={login}>
+                <div className="field">
+                  <Label htmlFor="username">Username</Label>
+                  <Input
+                    id="username"
+                    type="text"
+                    value={loginUsername}
+                    onChange={(event) => setLoginUsername(event.target.value)}
+                    placeholder="demo.customer"
+                    autoComplete="username"
+                  />
+                </div>
+                <div className="field">
+                  <Label htmlFor="customerPassword">Password</Label>
+                  <Input
+                    id="customerPassword"
+                    type="password"
+                    value={loginPassword}
+                    onChange={(event) => setLoginPassword(event.target.value)}
+                    placeholder="password123"
+                    autoComplete="current-password"
+                  />
+                  <p className="hint">Demo customer: demo.customer / password123</p>
+                </div>
+                {loginError && <Alert variant="destructive">{loginError}</Alert>}
+                <Button type="submit" disabled={isLoggingIn}>
+                  <UserCircle size={16} />
+                  {isLoggingIn ? 'Logging in...' : 'Log in'}
+                </Button>
+              </form>
+            ) : authMode === 'signup' ? (
+              <form className="stack-form" onSubmit={signup}>
+                <div className="field">
+                  <Label htmlFor="signupUsername">Username</Label>
+                  <Input
+                    id="signupUsername"
+                    type="text"
+                    value={signupUsername}
+                    onChange={(event) => setSignupUsername(event.target.value)}
+                    placeholder="your.name"
+                    autoComplete="username"
+                  />
+                </div>
+                <div className="field">
+                  <Label htmlFor="signupFullName">Full name</Label>
+                  <Input
+                    id="signupFullName"
+                    type="text"
+                    value={signupFullName}
+                    onChange={(event) => setSignupFullName(event.target.value)}
+                    placeholder="Your Name"
+                    autoComplete="name"
+                  />
+                </div>
+                <div className="field">
+                  <Label htmlFor="signupEmail">Email</Label>
+                  <Input
+                    id="signupEmail"
+                    type="email"
+                    value={signupEmail}
+                    onChange={(event) => setSignupEmail(event.target.value)}
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                  />
+                </div>
+                <div className="field">
+                  <Label htmlFor="signupPassword">Password</Label>
+                  <Input
+                    id="signupPassword"
+                    type="password"
+                    value={signupPassword}
+                    onChange={(event) => setSignupPassword(event.target.value)}
+                    placeholder="At least 6 characters"
+                    autoComplete="new-password"
+                  />
+                  <p className="hint">New customers receive a {formatMoney(15000)} starter budget.</p>
+                </div>
+                {loginError && <Alert variant="destructive">{loginError}</Alert>}
+                <Button type="submit" disabled={isLoggingIn}>
+                  <UserCircle size={16} />
+                  {isLoggingIn ? 'Creating account...' : 'Create account'}
+                </Button>
+              </form>
+            ) : (
+              <form className="stack-form" onSubmit={verifyEmail}>
+                <div className="field">
+                  <Label htmlFor="verificationEmail">Email</Label>
+                  <Input
+                    id="verificationEmail"
+                    type="email"
+                    value={pendingVerificationEmail}
+                    onChange={(event) => setPendingVerificationEmail(event.target.value)}
+                    autoComplete="email"
+                  />
+                </div>
+                <div className="field">
+                  <Label htmlFor="verificationCode">Verification code</Label>
+                  <Input
+                    id="verificationCode"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength="6"
+                    value={verificationCode}
+                    onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="123456"
+                    autoComplete="one-time-code"
+                  />
+                  <p className="hint">{verificationMessage || 'Enter the 6-digit code sent to your email.'}</p>
+                </div>
+                {loginError && <Alert variant="destructive">{loginError}</Alert>}
+                <Button type="submit" disabled={isLoggingIn || verificationCode.length !== 6}>
+                  <UserCircle size={16} />
+                  {isLoggingIn ? 'Verifying...' : 'Verify email'}
+                </Button>
+                <Button type="button" variant="outline" onClick={resendVerificationCode} disabled={isLoggingIn || !pendingVerificationEmail}>
+                  Resend code
+                </Button>
+              </form>
+            )}
           </CardContent>
         </Card>
       </main>
@@ -559,13 +991,25 @@ function CustomerApp() {
     <div className="app-shell">
       <header className="top-bar">
         <div className="title-group">
-          <Badge variant="outline">Support Chat</Badge>
-          <h1>Orders and tickets</h1>
+          <Badge variant="outline">Customer store</Badge>
+          <h1>{activePage === 'shop' ? 'Initiate order' : 'Orders and support'}</h1>
         </div>
         <div className="header-meta">
-          <StatusPill label={connected ? 'Connected' : connecting ? 'Connecting' : 'Disconnected'} tone={connected ? 'success' : 'danger'} />
+          <nav className="page-tabs" aria-label="Customer pages">
+            <Button type="button" variant={activePage === 'shop' ? 'default' : 'outline'} size="sm" onClick={() => setActivePage('shop')}>
+              <Store size={15} />
+              Initiate order
+            </Button>
+            <Button type="button" variant={activePage === 'support' ? 'default' : 'outline'} size="sm" onClick={() => setActivePage('support')}>
+              <PackageCheck size={15} />
+              Orders & support
+            </Button>
+          </nav>
+          {activePage === 'support' && (
+            <StatusPill label={connected ? 'Connected' : connecting ? 'Connecting' : 'Disconnected'} tone={connected ? 'success' : 'danger'} />
+          )}
           {ticketId && <StatusPill label={`Ticket #${ticketId}`} tone="info" />}
-          <StatusPill label={ticketStatus || 'No active ticket'} tone={statusTone(ticketStatus)} />
+          {activePage === 'support' && <StatusPill label={ticketStatus || 'No active ticket'} tone={statusTone(ticketStatus)} />}
           <Button type="button" variant="outline" onClick={logout}>
             <LogOut size={16} />
             Logout
@@ -576,49 +1020,198 @@ function CustomerApp() {
       <main className="customer-page">
         <section className="customer-strip">
           <Stat icon={UserCircle} label="Signed in" value={user.fullName} detail={user.email} />
-          <Stat icon={ShieldCheck} label="User ID" value={user.userId} />
-          <Stat icon={MessageCircle} label="Conversation" value={conversationState || 'START'} />
+          <Stat icon={Wallet} label="Remaining budget" value={formatMoney(budget.remainingBudget)} detail={`${formatMoney(budget.spentAmount)} spent`} />
         </section>
 
-        <div className="customer-grid">
-          <OrdersPanel
-            orders={orders}
-            ordersLoading={ordersLoading}
-            ordersError={ordersError}
-            selectedOrderId={selectedOrderId}
-            expandedOrderId={expandedOrderId}
-            orderDetails={orderDetails}
-            detailLoadingId={detailLoadingId}
-            onRefresh={() => fetchOrders(user.userId, token)}
-            onToggleOrder={toggleOrder}
+        {activePage === 'shop' ? (
+          <ProductShopPanel
+            products={products}
+            loading={productsLoading}
+            error={productsError}
+            cart={cart}
+            cartTotal={cartTotal}
+            cartCount={cartCount}
+            budget={budget}
+            orderError={orderError}
+            orderMessage={orderMessage}
+            isPlacingOrder={isPlacingOrder}
+            onRefresh={fetchProducts}
+            onSetQuantity={setCartQuantity}
+            onPlaceOrder={placeOrder}
+            onViewOrders={() => setActivePage('support')}
           />
+        ) : (
+          <>
+            <div className="customer-grid">
+              <OrdersPanel
+                orders={orders}
+                ordersLoading={ordersLoading}
+                ordersError={ordersError}
+                selectedOrderId={selectedOrderId}
+                expandedOrderId={expandedOrderId}
+                orderDetails={orderDetails}
+                detailLoadingId={detailLoadingId}
+                onRefresh={() => fetchOrders(user.userId, token)}
+                onCreateOrder={() => setActivePage('shop')}
+                onToggleOrder={toggleOrder}
+              />
 
-          <TicketsPanel
-            tickets={createdTickets}
-            loading={ticketsLoading}
-            error={ticketsError}
-            activeTicketId={ticketId || selectedTicketSummaryId}
-            isStarting={isStartingTicket}
-            onCreate={startNewTicket}
-            onRefresh={() => fetchCustomerTickets(user.userId, token)}
-            onSelect={openCustomerTicket}
-          />
-        </div>
+              <TicketsPanel
+                tickets={createdTickets}
+                loading={ticketsLoading}
+                error={ticketsError}
+                activeTicketId={ticketId || selectedTicketSummaryId}
+                isStarting={isStartingTicket}
+                onCreate={startNewTicket}
+                onRefresh={() => fetchCustomerTickets(user.userId, token)}
+                onSelect={openCustomerTicket}
+              />
+            </div>
 
-        {hasActiveTicket && (
-          <ChatPanel
-            messages={messages}
-            draft={draft}
-            setDraft={setDraft}
-            onSubmit={submitMessage}
-            connected={connected}
-            ticketId={ticketId}
-            isResolved={ticketIsResolved}
-            loading={ticketDetailLoading}
-            messagesEndRef={messagesEndRef}
-          />
+            {hasActiveTicket && (
+              <ChatPanel
+                messages={messages}
+                draft={draft}
+                setDraft={setDraft}
+                onSubmit={submitMessage}
+                connected={connected}
+                waitingForReply={waitingForReply}
+                ticketId={ticketId}
+                isResolved={ticketIsResolved}
+                loading={ticketDetailLoading}
+                messagesEndRef={messagesEndRef}
+              />
+            )}
+          </>
         )}
       </main>
+    </div>
+  );
+}
+
+function ProductShopPanel({
+  products,
+  loading,
+  error,
+  cart,
+  cartTotal,
+  cartCount,
+  budget,
+  orderError,
+  orderMessage,
+  isPlacingOrder,
+  onRefresh,
+  onSetQuantity,
+  onPlaceOrder,
+  onViewOrders,
+}) {
+  const overBudget = cartTotal > Number(budget.remainingBudget || 0);
+
+  return (
+    <div className="shop-layout">
+      <Card aria-labelledby="catalog-title">
+        <CardHeader className="section-heading">
+          <div>
+            <CardTitle id="catalog-title">Items</CardTitle>
+            <CardDescription>Select products within your remaining shopping budget.</CardDescription>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
+            <RefreshCw size={15} />
+            Refresh
+          </Button>
+        </CardHeader>
+
+        <CardContent>
+          {error && <Alert variant="destructive">{error}</Alert>}
+          {loading && <EmptyState>Loading products...</EmptyState>}
+          {!loading && products.length === 0 && !error && <EmptyState>No products are available right now.</EmptyState>}
+
+          <div className="product-grid">
+            {products.map((product) => {
+              const quantity = cart[product.productId] || 0;
+
+              return (
+                <article className="product-row" key={product.productId}>
+                  <div className="product-main">
+                    <span className="product-icon"><ShoppingCart size={17} /></span>
+                    <span>
+                      <strong>{product.name}</strong>
+                      <small>{product.category} - {product.productId}</small>
+                    </span>
+                  </div>
+                  <strong>{formatMoney(product.price)}</strong>
+                  <div className="quantity-stepper" aria-label={`${product.name} quantity`}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => onSetQuantity(product.productId, quantity - 1)}
+                      disabled={quantity === 0}
+                      aria-label={`Remove ${product.name}`}
+                    >
+                      <Minus size={16} />
+                    </Button>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="9"
+                      value={quantity}
+                      onChange={(event) => onSetQuantity(product.productId, event.target.value)}
+                      aria-label={`${product.name} quantity`}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => onSetQuantity(product.productId, quantity + 1)}
+                      disabled={quantity >= 9}
+                      aria-label={`Add ${product.name}`}
+                    >
+                      <Plus size={16} />
+                    </Button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="checkout-panel" aria-labelledby="checkout-title">
+        <CardHeader>
+          <CardTitle id="checkout-title">Checkout</CardTitle>
+          <CardDescription>Orders are saved immediately and appear on your orders page.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="budget-meter">
+            <span>
+              <small>Remaining budget</small>
+              <strong>{formatMoney(budget.remainingBudget)}</strong>
+            </span>
+            <span>
+              <small>Cart total</small>
+              <strong className={cn(overBudget && 'danger-text')}>{formatMoney(cartTotal)}</strong>
+            </span>
+          </div>
+          <div className="checkout-summary">
+            <Fact label="Items" value={cartCount} />
+            <Fact label="Budget after order" value={formatMoney(Math.max(0, Number(budget.remainingBudget || 0) - cartTotal))} />
+          </div>
+          {overBudget && <Alert variant="destructive">Cart total is higher than your remaining budget.</Alert>}
+          {orderError && <Alert variant="destructive">{orderError}</Alert>}
+          {orderMessage && <Alert variant="success">{orderMessage}</Alert>}
+          <div className="checkout-actions">
+            <Button type="button" onClick={onPlaceOrder} disabled={!cartCount || overBudget || isPlacingOrder}>
+              <PackageCheck size={16} />
+              {isPlacingOrder ? 'Placing order...' : 'Place order'}
+            </Button>
+            <Button type="button" variant="outline" onClick={onViewOrders}>
+              <Ticket size={16} />
+              Orders and support
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -632,6 +1225,7 @@ function OrdersPanel({
   orderDetails,
   detailLoadingId,
   onRefresh,
+  onCreateOrder,
   onToggleOrder,
 }) {
   return (
@@ -641,16 +1235,32 @@ function OrdersPanel({
           <CardTitle id="orders-title">Orders</CardTitle>
           <CardDescription>Expand an order to review items and refund status.</CardDescription>
         </div>
-        <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
-          <RefreshCw size={15} />
-          Refresh
-        </Button>
+        <div className="section-actions">
+          <Button type="button" size="sm" onClick={onCreateOrder}>
+            <Store size={15} />
+            Initiate order
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
+            <RefreshCw size={15} />
+            Refresh
+          </Button>
+        </div>
       </CardHeader>
 
       <CardContent>
         {ordersError && <Alert variant="destructive">{ordersError}</Alert>}
         {ordersLoading && <EmptyState>Loading your orders...</EmptyState>}
-        {!ordersLoading && orders.length === 0 && !ordersError && <EmptyState>No orders were found for this customer.</EmptyState>}
+        {!ordersLoading && orders.length === 0 && !ordersError && (
+          <EmptyState>
+            <div className="empty-action">
+              <span>No orders were found for this customer.</span>
+              <Button type="button" size="sm" onClick={onCreateOrder}>
+                <Store size={15} />
+                Initiate order
+              </Button>
+            </div>
+          </EmptyState>
+        )}
 
         <div className="order-list">
           {orders.map((order) => {
@@ -708,15 +1318,16 @@ function TicketsPanel({ tickets, loading, error, activeTicketId, isStarting, onC
     <Card aria-labelledby="tickets-title">
       <CardHeader className="section-heading">
         <div>
-          <CardTitle id="tickets-title">Created tickets</CardTitle>
-          <CardDescription>Use the ticket icon to start another support ticket.</CardDescription>
+          <CardTitle id="tickets-title">Support</CardTitle>
+          <CardDescription>Raise a concern for an order and continue support chats.</CardDescription>
         </div>
-        <div className="icon-actions">
+        <div className="section-actions">
           <Button type="button" variant="outline" size="icon" onClick={onRefresh} aria-label="Refresh tickets" title="Refresh tickets">
             <RefreshCw size={16} />
           </Button>
-          <Button type="button" size="icon" onClick={onCreate} disabled={isStarting} aria-label="Create ticket" title="Create ticket">
+          <Button type="button" size="sm" onClick={onCreate} disabled={isStarting}>
             <TicketPlus size={18} />
+            {isStarting ? 'Starting...' : 'Raise concern'}
           </Button>
         </div>
       </CardHeader>
@@ -726,7 +1337,13 @@ function TicketsPanel({ tickets, loading, error, activeTicketId, isStarting, onC
         {loading && <EmptyState>Loading tickets...</EmptyState>}
         {!loading && tickets.length === 0 && !error && (
           <EmptyState>
-            No created tickets yet. Use the ticket-plus button to start one.
+            <div className="empty-action">
+              <span>No concerns have been raised yet.</span>
+              <Button type="button" size="sm" onClick={onCreate} disabled={isStarting}>
+                <TicketPlus size={15} />
+                Raise concern
+              </Button>
+            </div>
           </EmptyState>
         )}
         <div className="ticket-list">
@@ -742,7 +1359,7 @@ function TicketsPanel({ tickets, loading, error, activeTicketId, isStarting, onC
               </span>
               <span>
                 <strong>Ticket #{ticket.ticketId}</strong>
-                <small>{ticket.issueType || 'New support ticket'} · {formatDateTime(ticket.createdAt)}</small>
+                <small>{ticket.issueType || 'New support ticket'} - {formatDateTime(ticket.createdAt)}</small>
               </span>
               <StatusPill label={ticket.status || 'OPEN'} tone={statusTone(ticket.status || 'OPEN')} />
             </button>
@@ -753,7 +1370,7 @@ function TicketsPanel({ tickets, loading, error, activeTicketId, isStarting, onC
   );
 }
 
-function ChatPanel({ messages, draft, setDraft, onSubmit, connected, ticketId, isResolved, loading, messagesEndRef }) {
+function ChatPanel({ messages, draft, setDraft, onSubmit, connected, waitingForReply, ticketId, isResolved, loading, messagesEndRef }) {
   return (
     <Card className="chat-card" aria-labelledby="support-title">
       <CardHeader className="section-heading">
@@ -782,6 +1399,16 @@ function ChatPanel({ messages, draft, setDraft, onSubmit, connected, ticketId, i
                 </div>
               </div>
             ))
+          )}
+          {!loading && waitingForReply && (
+            <div className="message bot typing-message" aria-live="polite" aria-label="Support is typing">
+              <div className="message-avatar"><Bot size={16} /></div>
+              <div className="typing-bubble" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            </div>
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -840,14 +1467,14 @@ function AdminApp() {
   }, [selectedTicketId]);
 
   useEffect(() => {
-    if (!admin) return;
+    if (!admin || !adminToken) return undefined;
     connectAdminWebSocket();
 
     return () => {
       adminClientRef.current?.deactivate();
       adminClientRef.current = null;
     };
-  }, [admin]);
+  }, [admin, adminToken]);
 
   async function loginAdmin(event) {
     event.preventDefault();
@@ -893,6 +1520,8 @@ function AdminApp() {
 
   function logoutAdmin() {
     sessionStorage.removeItem('support-admin-session');
+    adminClientRef.current?.deactivate();
+    adminClientRef.current = null;
     setAdmin(null);
     setAdminToken('');
     setTickets([]);
@@ -967,7 +1596,7 @@ function AdminApp() {
     }
   }
 
-  async function sendAdminReply(event) {
+  function sendAdminReply(event) {
     event.preventDefault();
     const message = replyDraft.trim();
     if (!message || !selectedTicketId) return;
@@ -976,30 +1605,23 @@ function AdminApp() {
     setActionError('');
     setActionMessage('');
 
-    try {
-      const response = await adminFetch(`/api/admin/tickets/${encodeURIComponent(selectedTicketId)}/reply`, adminToken, {
-        method: 'POST',
-        body: JSON.stringify({ message }),
-      });
-
-      if (response.status === 401 || response.status === 403) {
-        expireAdminSession();
-        return;
-      }
-
-      if (!response.ok) {
-        setActionError('Reply could not be sent.');
-        return;
-      }
-
-      setReplyDraft('');
-      setActionMessage('Reply sent.');
-      await refreshSelectedTicket();
-    } catch (error) {
-      setActionError('Reply could not be sent.');
-    } finally {
+    if (!adminClientRef.current?.connected) {
+      connectAdminWebSocket();
       setIsSendingReply(false);
+      setActionError('Chat is reconnecting. Please send that reply again in a moment.');
+      return;
     }
+
+    adminClientRef.current.publish({
+      destination: SEND_ADMIN_REPLY_ENDPOINT,
+      body: JSON.stringify({
+        ticketId: selectedTicketId,
+        message,
+      }),
+    });
+    setReplyDraft('');
+    setActionMessage('Reply sent.');
+    setIsSendingReply(false);
   }
 
   async function initiateRefund(event) {
@@ -1096,6 +1718,8 @@ function AdminApp() {
 
   function expireAdminSession() {
     sessionStorage.removeItem('support-admin-session');
+    adminClientRef.current?.deactivate();
+    adminClientRef.current = null;
     setAdmin(null);
     setAdminToken('');
     setLoginError('Your admin session expired. Please log in again.');
@@ -1106,11 +1730,14 @@ function AdminApp() {
 
     const stompClient = new Client({
       webSocketFactory: () => new SockJS(WS_URL),
+      connectHeaders: {
+        Authorization: `Bearer ${adminToken}`,
+      },
       reconnectDelay: 3000,
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
       onConnect: () => {
-        stompClient.subscribe(SUBSCRIBE_ENDPOINT, (frame) => {
+        stompClient.subscribe(ADMIN_TICKET_TOPIC, (frame) => {
           try {
             const response = JSON.parse(frame.body);
             receiveAdminMessage(response);
@@ -1126,7 +1753,7 @@ function AdminApp() {
   }
 
   function receiveAdminMessage(response) {
-    if (response.sender !== 'USER' || !response.message?.trim()) return;
+    if (!['USER', 'ADMIN'].includes(response.sender) || !response.message?.trim()) return;
 
     const activeTicketId = selectedTicketRef.current;
     if (!activeTicketId || response.ticketId !== activeTicketId) {
@@ -1137,8 +1764,8 @@ function AdminApp() {
     setTicketDetail((previous) => {
       if (!previous || previous.ticketId !== response.ticketId) return previous;
       const nextMessage = {
-        id: `${response.timestamp || Date.now()}-user-live`,
-        sender: 'USER',
+        id: `${response.timestamp || Date.now()}-${response.sender.toLowerCase()}-live`,
+        sender: response.sender,
         message: response.message,
         timestamp: response.timestamp || new Date().toISOString(),
       };
@@ -1403,6 +2030,44 @@ function adminFetch(path, accessToken, options = {}) {
       Authorization: `Bearer ${accessToken}`,
     },
   });
+}
+
+function normalizeCustomer(data) {
+  return {
+    userId: data.userId,
+    fullName: data.fullName,
+    email: data.email,
+    shoppingBudget: Number(data.shoppingBudget || 0),
+    spentAmount: Number(data.spentAmount || 0),
+    remainingBudget: Number(data.remainingBudget || 0),
+  };
+}
+
+function saveCustomerSession(user, token) {
+  sessionStorage.setItem('support-chat-session', JSON.stringify({ user, token }));
+}
+
+function emptyBudget() {
+  return {
+    shoppingBudget: 0,
+    spentAmount: 0,
+    remainingBudget: 0,
+  };
+}
+
+function userBudget(user) {
+  return {
+    shoppingBudget: Number(user?.shoppingBudget || 0),
+    spentAmount: Number(user?.spentAmount || 0),
+    remainingBudget: Number(user?.remainingBudget || 0),
+  };
+}
+
+function calculateCartTotal(products, cart) {
+  return products.reduce((total, product) => {
+    const quantity = cart[product.productId] || 0;
+    return total + Number(product.price || 0) * quantity;
+  }, 0);
 }
 
 function readSavedSession() {

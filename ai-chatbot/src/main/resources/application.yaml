@@ -1,4 +1,7 @@
 spring:
+  config:
+    import: optional:file:../.env[.properties]
+
   application:
     name: ai-chatbot
   datasource:
@@ -23,6 +26,17 @@ spring:
       port: ${REDIS_PORT:6379}
       repositories:
         enabled: false
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
 
 chatbot:
   session-ttl-minutes: ${SESSION_TTL_MINUTES:30}
@@ -32,8 +46,9 @@ chatbot:
   auth:
     jwt-secret: ${JWT_SECRET:change-this-development-secret-to-a-long-random-production-secret}
     access-token-expiry-minutes: ${ACCESS_TOKEN_EXPIRY_MINUTES:120}
+    email-verification-expiry-minutes: ${EMAIL_VERIFICATION_EXPIRY_MINUTES:10}
   ai:
-    openai:
-      api-key: ${OPENAI_API_KEY:}
-      model: ${OPENAI_MODEL:gpt-4o-mini}
-      url: ${OPENAI_RESPONSES_URL:https://api.openai.com/v1/responses}
+    openrouter:
+      api-key: ${OPENROUTER_API_KEY:}
+      model: ${OPENROUTER_MODEL:openrouter/free}
+      url: ${OPENROUTER_URL:https://openrouter.ai/api/v1/chat/completions}

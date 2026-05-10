@@ -22,6 +22,8 @@ import com.personal.ai_chatbot.service.OrderService;
 import com.personal.ai_chatbot.service.RefundService;
 import com.personal.ai_chatbot.service.SessionService;
 import com.personal.ai_chatbot.service.TicketService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +37,8 @@ import java.util.Set;
 
 @Service
 public class ChatServiceImpl implements ChatService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChatServiceImpl.class);
 
     private final SessionService sessionService;
     private final TicketService ticketService;
@@ -74,9 +78,17 @@ public class ChatServiceImpl implements ChatService {
     @Transactional
     public ChatMessageResponse handleMessage(ChatMessageRequest request) {
         UserSession session = loadOrRecoverSession(request.userId());
+        LOGGER.info(
+                "Chat request received userId={} state={} ticketId={} retryCount={} messageLength={}",
+                request.userId(),
+                session.getState(),
+                session.getCurrentTicketId(),
+                session.getRetryCount(),
+                request.message() == null ? 0 : request.message().length());
         Optional<Ticket> activeTicket = currentTicket(session);
         if (activeTicket.filter(this::isResolved).isPresent()) {
             Ticket ticket = activeTicket.get();
+            LOGGER.info("Chat request ignored because ticket is resolved userId={} ticketId={}", request.userId(), ticket.getTicketId());
             session.setState(ConversationState.RESOLVED);
             sessionService.save(session);
             return new ChatMessageResponse(
@@ -108,6 +120,15 @@ public class ChatServiceImpl implements ChatService {
             saveMessage(request.userId(), response.ticketId(), MessageSender.BOT, response.message());
         }
         sessionService.save(session);
+        LOGGER.info(
+                "Chat response userId={} state={} status={} ticketId={} orderId={} persistMessage={} messageLength={}",
+                response.userId(),
+                response.state(),
+                response.status(),
+                response.ticketId(),
+                response.orderId(),
+                response.persistMessage(),
+                response.message() == null ? 0 : response.message().length());
         return response;
     }
 
@@ -139,15 +160,18 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private ChatMessageResponse handleOrderId(ChatMessageRequest request, UserSession session) {
+        LOGGER.info("Handling order id step userId={} ticketId={}", request.userId(), session.getCurrentTicketId());
         Optional<String> orderId = aiService.extractOrderId(request.message());
         if (orderId.isEmpty()) {
             session.increaseRetryCount();
+            LOGGER.info("Order id extraction failed userId={} retryCount={}", request.userId(), session.getRetryCount());
             return buildResponse(session, TicketStatus.OPEN, "Please provide a valid order ID.");
         }
 
         Optional<CustomerOrder> order = orderService.findUserOrder(orderId.get(), request.userId());
         if (order.isEmpty()) {
             session.increaseRetryCount();
+            LOGGER.info("Order id not found for user userId={} orderId={} retryCount={}", request.userId(), orderId.get(), session.getRetryCount());
             return buildResponse(session, TicketStatus.OPEN, "I could not find this order for your account. Please check the order ID.");
         }
 
@@ -223,18 +247,32 @@ public class ChatServiceImpl implements ChatService {
 
     private ChatMessageResponse processRefund(ChatMessageRequest request, UserSession session) {
         Ticket ticket = currentTicket(session).orElseThrow();
-        List<ChatMessage> recentMessages = chatMessageRepository.findTop5ByUserIdOrderByTimestampDesc(request.userId());
-        AIEscalationResult aiResult = aiService.analyzeEscalation(recentMessages, ticket.getState(), request.message());
         BigDecimal refundAmount = refundService.calculateRefund(ticket);
+        AIEscalationResult aiResult = AIEscalationResult.neutral();
+
+        if (!escalationService.shouldEscalate(refundAmount, session, request.message(), aiResult)) {
+            LOGGER.info("Calling AI escalation analysis during refund userId={} ticketId={} state={}", request.userId(), ticket.getTicketId(), ticket.getState());
+            List<ChatMessage> recentMessages = chatMessageRepository.findTop5ByUserIdOrderByTimestampDesc(request.userId());
+            aiResult = aiService.analyzeEscalation(recentMessages, ticket.getState(), request.message());
+            LOGGER.info(
+                    "AI escalation analysis completed userId={} ticketId={} recommended={} confidence={} sentiment={}",
+                    request.userId(),
+                    ticket.getTicketId(),
+                    aiResult.escalationRecommended(),
+                    aiResult.confidence(),
+                    aiResult.sentiment());
+        }
 
         if (escalationService.shouldEscalate(refundAmount, session, request.message(), aiResult)) {
             Ticket updatedTicket = ticketService.updateFinalStatus(ticket, ConversationState.ESCALATED, TicketStatus.ESCALATED, refundAmount);
             session.setState(ConversationState.ESCALATED);
+            LOGGER.info("Refund flow escalated userId={} ticketId={} refundAmount={}", request.userId(), updatedTicket.getTicketId(), refundAmount);
             return buildResponse(session, updatedTicket.getStatus(), "I'm sorry for the inconvenience. I'm escalating this to a support agent for priority assistance.");
         }
 
         Ticket updatedTicket = ticketService.updateFinalStatus(ticket, ConversationState.RESOLVED, TicketStatus.RESOLVED, refundAmount);
         session.setState(ConversationState.RESOLVED);
+        LOGGER.info("Refund flow resolved userId={} ticketId={} refundAmount={}", request.userId(), updatedTicket.getTicketId(), refundAmount);
         return buildResponse(session, updatedTicket.getStatus(), "Your refund of Rs." + refundAmount + " has been initiated.");
     }
 
@@ -245,22 +283,34 @@ public class ChatServiceImpl implements ChatService {
 
         Optional<Ticket> ticket = currentTicket(session);
         ConversationState ticketState = ticket.map(Ticket::getState).orElse(session.getState());
-        List<ChatMessage> recentMessages = chatMessageRepository.findTop5ByUserIdOrderByTimestampDesc(request.userId());
-        AIEscalationResult aiResult = aiService.analyzeEscalation(recentMessages, ticketState, request.message());
+        AIEscalationResult aiResult = AIEscalationResult.neutral();
 
-        // Explicit human requests or strong dissatisfaction should override the normal form-like flow.
+        // Ask the configured AI provider first; provider classes fall back to compact rules only if AI is unavailable.
         if (!escalationService.shouldEscalate(BigDecimal.ZERO, session, request.message(), aiResult)) {
-            return Optional.empty();
+            LOGGER.info("Calling AI immediate escalation analysis userId={} ticketId={} state={}", request.userId(), session.getCurrentTicketId(), ticketState);
+            List<ChatMessage> recentMessages = chatMessageRepository.findTop5ByUserIdOrderByTimestampDesc(request.userId());
+            aiResult = aiService.analyzeEscalation(recentMessages, ticketState, request.message());
+            LOGGER.info(
+                    "AI immediate escalation analysis completed userId={} ticketId={} recommended={} confidence={} sentiment={}",
+                    request.userId(),
+                    session.getCurrentTicketId(),
+                    aiResult.escalationRecommended(),
+                    aiResult.confidence(),
+                    aiResult.sentiment());
+            if (!escalationService.shouldEscalate(BigDecimal.ZERO, session, request.message(), aiResult)) {
+                LOGGER.info("Immediate escalation not triggered userId={} ticketId={} state={}", request.userId(), session.getCurrentTicketId(), ticketState);
+                return Optional.empty();
+            }
         }
 
+        Ticket escalatedTicket = ticket
+                .orElseGet(() -> ticketService.createTicket(request.userId(), null));
+        Ticket updatedTicket = ticketService.updateFinalStatus(escalatedTicket, ConversationState.ESCALATED, TicketStatus.ESCALATED, BigDecimal.ZERO);
+        session.setCurrentTicketId(updatedTicket.getTicketId());
         session.setState(ConversationState.ESCALATED);
-        TicketStatus status = TicketStatus.ESCALATED;
-        if (ticket.isPresent()) {
-            Ticket updatedTicket = ticketService.updateFinalStatus(ticket.get(), ConversationState.ESCALATED, TicketStatus.ESCALATED, BigDecimal.ZERO);
-            status = updatedTicket.getStatus();
-        }
+        LOGGER.info("Immediate escalation triggered userId={} ticketId={} orderId={} previousState={}", request.userId(), updatedTicket.getTicketId(), updatedTicket.getOrderId(), ticketState);
 
-        return Optional.of(buildResponse(session, status, "I'm sorry for the inconvenience. I'm escalating this to a support agent for priority assistance."));
+        return Optional.of(buildResponse(session, updatedTicket.getStatus(), "I'm sorry for the inconvenience. I'm escalating this to a support agent for priority assistance."));
     }
 
     private Optional<Ticket> currentTicket(UserSession session) {
@@ -337,7 +387,7 @@ public class ChatServiceImpl implements ChatService {
             return;
         }
         messagingTemplate.convertAndSend(
-                "/topic/public",
+                "/topic/admin/tickets",
                 new ChatMessageResponse(
                         message.getUserId(),
                         message.getTicketId(),

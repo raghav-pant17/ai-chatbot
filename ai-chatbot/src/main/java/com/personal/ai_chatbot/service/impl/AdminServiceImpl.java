@@ -191,18 +191,18 @@ public class AdminServiceImpl implements AdminService {
     }
 
     private void publishAdminMessage(Ticket ticket, ChatMessage message) {
-        messagingTemplate.convertAndSend(
-                "/topic/public",
-                new ChatMessageResponse(
-                        ticket.getUserId(),
-                        ticket.getTicketId(),
-                        ticket.getOrderId(),
-                        ticket.getState(),
-                        ticket.getStatus(),
-                        message.getMessage(),
-                        message.getTimestamp(),
-                        MessageSender.ADMIN,
-                        true));
+        ChatMessageResponse response = new ChatMessageResponse(
+                ticket.getUserId(),
+                ticket.getTicketId(),
+                ticket.getOrderId(),
+                ticket.getState(),
+                ticket.getStatus(),
+                message.getMessage(),
+                message.getTimestamp(),
+                MessageSender.ADMIN,
+                true);
+        messagingTemplate.convertAndSendToUser(ticket.getUserId(), "/queue/chat", response);
+        messagingTemplate.convertAndSend("/topic/admin/tickets", response);
     }
 
     private boolean passwordMatches(String rawPassword, AdminUser adminUser) {

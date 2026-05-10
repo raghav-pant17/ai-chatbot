@@ -11,7 +11,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest
+@SpringBootTest(properties = "chatbot.ai.openrouter.api-key=")
 class ChatServiceFlowTests {
 
     private final ChatService chatService;
@@ -46,6 +46,19 @@ class ChatServiceFlowTests {
         assertThat(order.state()).isEqualTo(ConversationState.SELECT_ITEMS);
 
         ChatMessageResponse escalation = chatService.handleMessage(new ChatMessageRequest("user-2", "I want to talk to human"));
+        assertThat(escalation.state()).isEqualTo(ConversationState.ESCALATED);
+        assertThat(escalation.status()).isEqualTo(TicketStatus.ESCALATED);
+        assertThat(escalation.message()).contains("escalating this to a support agent");
+    }
+
+    @Test
+    void escalatesHumanRequestBeforeOrderIdIsProvided() {
+        ChatMessageResponse start = chatService.handleMessage(new ChatMessageRequest("user-3", "I have a refund issue"));
+        assertThat(start.state()).isEqualTo(ConversationState.ASK_ORDER_ID);
+
+        ChatMessageResponse escalation = chatService.handleMessage(new ChatMessageRequest("user-3", "I want to talk to human"));
+        assertThat(escalation.ticketId()).isNotNull();
+        assertThat(escalation.orderId()).isNull();
         assertThat(escalation.state()).isEqualTo(ConversationState.ESCALATED);
         assertThat(escalation.status()).isEqualTo(TicketStatus.ESCALATED);
         assertThat(escalation.message()).contains("escalating this to a support agent");

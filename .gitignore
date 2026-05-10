@@ -10,6 +10,7 @@ out/
 # Logs and runtime files
 *.log
 *.pid
+docs/
 
 # Local environment
 .env
@@ -21,7 +22,3 @@ out/
 .vscode/
 .DS_Store
 Thumbs.db
-
-# Keep only README markdown files in the repo.
-*.md
-!**/README.md

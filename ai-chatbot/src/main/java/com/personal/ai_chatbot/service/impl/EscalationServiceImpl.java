@@ -19,15 +19,8 @@ public class EscalationServiceImpl implements EscalationService {
 
     @Override
     public boolean shouldEscalate(BigDecimal refundAmount, UserSession session, String latestMessage, AIEscalationResult aiResult) {
-        String normalizedMessage = latestMessage == null ? "" : latestMessage.toLowerCase();
         return refundAmount.compareTo(refundEscalationLimit) > 0
                 || session.getRetryCount() > 2
-                || normalizedMessage.contains("human")
-                || normalizedMessage.contains("agent")
-                || normalizedMessage.contains("manager")
-                || normalizedMessage.contains("pissed")
-                || normalizedMessage.contains("angry")
-                || normalizedMessage.contains("frustrated")
                 || (aiResult.escalationRecommended() && aiResult.confidence() >= 0.75);
     }
 }

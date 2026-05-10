@@ -1,7 +1,10 @@
 CREATE TABLE ecommerce_users (
     user_id VARCHAR(255) PRIMARY KEY,
+    username VARCHAR(255) NOT NULL,
     full_name VARCHAR(255),
-    email VARCHAR(255)
+    email VARCHAR(255),
+    password_salt VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL
 );
 
 ALTER TABLE customer_orders
@@ -11,10 +14,13 @@ UPDATE customer_orders
 SET order_time = CURRENT_TIMESTAMP
 WHERE order_time IS NULL;
 
-INSERT INTO ecommerce_users (user_id, full_name, email)
+INSERT INTO ecommerce_users (user_id, username, full_name, email, password_salt, password_hash)
 VALUES
-    ('user-1', 'Demo Customer', 'demo.customer@example.com'),
-    ('user-2', 'Priya Sharma', 'priya.sharma@example.com');
+    ('user-1', 'demo.customer', 'Demo Customer', 'demo.customer@example.com', 'customer-demo-salt', 'f3feeab9f8f98e78ad37d0947b9e483a8ace7f05672c2d74d1c4caa60c3ec069'),
+    ('user-2', 'priya.sharma', 'Priya Sharma', 'priya.sharma@example.com', 'customer-priya-salt', '314d3cea2ffdfaa9f33fc83f0ffc3ddbdd3c16878f931df70a7996e90280ebad');
+
+CREATE UNIQUE INDEX idx_ecommerce_users_username
+    ON ecommerce_users (username);
 
 INSERT INTO customer_orders (order_id, user_id, total_amount, order_time)
 VALUES

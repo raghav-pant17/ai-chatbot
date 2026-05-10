@@ -30,10 +30,22 @@ Client sends:
 /app/chat.sendMessage
 ```
 
-Server publishes:
+Customer subscribes:
 
 ```text
-/topic/public
+/user/queue/chat
+```
+
+Admin sends replies:
+
+```text
+/app/admin.reply
+```
+
+Admin subscribes to live ticket updates:
+
+```text
+/topic/admin/tickets
 ```
 
 Request:
@@ -43,6 +55,21 @@ Request:
   "userId": "user-1",
   "message": "I have a refund issue"
 }
+```
+
+Admin reply request:
+
+```json
+{
+  "ticketId": 1,
+  "message": "A support agent is checking this now."
+}
+```
+
+STOMP connections must include the same bearer token used by the REST APIs:
+
+```text
+Authorization: Bearer <accessToken>
 ```
 
 ## Login And Orders
@@ -56,8 +83,21 @@ POST /api/auth/login
 Content-Type: application/json
 
 {
-  "userId": "user-1"
+  "username": "demo.customer",
+  "password": "password123"
 }
+```
+
+Seeded demo customers:
+
+```text
+username: demo.customer
+password: password123
+userId: user-1
+
+username: priya.sharma
+password: password123
+userId: user-2
 ```
 
 The login response includes a JWT access token:
@@ -184,12 +224,12 @@ REDIS_PORT=6379
 SESSION_TTL_MINUTES=30
 ```
 
-OpenAI integration is optional. Without `OPENAI_API_KEY`, the app uses deterministic rule-based fallback logic.
+OpenRouter integration is optional. It is used for intent detection, order ID extraction, issue normalization, and escalation signals. AI output is advisory only; backend services still make final deterministic decisions for refund amount and ticket status.
 
 ```text
-OPENAI_API_KEY=your_api_key
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_RESPONSES_URL=https://api.openai.com/v1/responses
+OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=openrouter/free
+OPENROUTER_URL=https://openrouter.ai/api/v1/chat/completions
 ```
 
 ## Run
@@ -206,4 +246,4 @@ mvnw.cmd spring-boot:run
 
 ## Notes
 
-`OpenAIService` calls the OpenAI Responses API for intent detection, order ID extraction, issue normalization, and escalation signals. AI output is advisory only; backend services still make final deterministic decisions for refund amount and ticket status.
+If OpenRouter is unavailable, the app falls back to deterministic rule-based logic so chat flow still works.

@@ -14,20 +14,29 @@ import java.util.regex.Pattern;
 public class RuleBasedAIService implements AIService {
 
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("[A-Za-z0-9-]{3,}");
+    private static final List<String> STRONG_DISSATISFACTION_TERMS = List.of(
+            "angry",
+            "frustrated",
+            "pissed",
+            "third time",
+            "nobody is helping",
+            "human",
+            "agent",
+            "manager",
+            "fuck",
+            "bullshit");
+    private static final List<String> DISSATISFACTION_TERMS = List.of(
+            "not happy",
+            "bad service",
+            "disappointed");
 
     @Override
     public AIEscalationResult analyzeEscalation(List<ChatMessage> recentMessages, ConversationState state, String latestUserMessage) {
         String text = latestUserMessage == null ? "" : latestUserMessage.toLowerCase();
-        if (text.contains("angry")
-                || text.contains("frustrated")
-                || text.contains("pissed")
-                || text.contains("third time")
-                || text.contains("nobody is helping")
-                || text.contains("fuck")
-                || text.contains("bullshit")) {
+        if (containsAny(text, STRONG_DISSATISFACTION_TERMS)) {
             return new AIEscalationResult("ANGRY", true, 0.92, "User expresses strong dissatisfaction");
         }
-        if (text.contains("not happy") || text.contains("bad service") || text.contains("disappointed")) {
+        if (containsAny(text, DISSATISFACTION_TERMS)) {
             return new AIEscalationResult("DISSATISFIED", true, 0.78, "User expresses dissatisfaction");
         }
         return AIEscalationResult.neutral();
@@ -78,5 +87,9 @@ public class RuleBasedAIService implements AIService {
 
     private String safeText(String message) {
         return message == null ? "" : message.toLowerCase();
+    }
+
+    private boolean containsAny(String message, List<String> terms) {
+        return terms.stream().anyMatch(message::contains);
     }
 }
