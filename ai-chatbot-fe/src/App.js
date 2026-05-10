@@ -27,7 +27,7 @@ import { Label } from './components/ui/label';
 import { Textarea } from './components/ui/textarea';
 import { cn } from './lib/utils';
 
-const API_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8080';
 const WS_URL = `${API_BASE_URL}/ws`;
 const SEND_ENDPOINT = '/app/chat.sendMessage';
 const SEND_ADMIN_REPLY_ENDPOINT = '/app/admin.reply';
