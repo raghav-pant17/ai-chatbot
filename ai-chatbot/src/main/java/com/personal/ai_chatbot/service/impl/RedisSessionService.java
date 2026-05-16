@@ -3,6 +3,7 @@ package com.personal.ai_chatbot.service.impl;
 import com.personal.ai_chatbot.dto.UserSession;
 import com.personal.ai_chatbot.service.SessionService;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -23,7 +24,7 @@ public class RedisSessionService implements SessionService {
     private final Map<String, UserSession> localFallbackSessions = new ConcurrentHashMap<>();
 
     public RedisSessionService(
-            RedisTemplate<String, UserSession> redisTemplate,
+            @Qualifier("userSessionRedisTemplate") RedisTemplate<String, UserSession> redisTemplate,
             @Value("${chatbot.session-ttl-minutes}") long sessionTtlMinutes) {
         this.redisTemplate = redisTemplate;
         this.sessionTtl = Duration.ofMinutes(sessionTtlMinutes);
