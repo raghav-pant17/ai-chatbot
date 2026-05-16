@@ -10,6 +10,8 @@ import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
+
 @Service
 public class SmtpEmailService implements EmailService {
 
@@ -35,6 +37,9 @@ public class SmtpEmailService implements EmailService {
             return;
         }
 
+        long startedAt = System.nanoTime();
+        LOGGER.info("SMTP verification email send started to={}", toEmail);
+
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(fromEmail);
         message.setTo(toEmail);
@@ -47,8 +52,13 @@ public class SmtpEmailService implements EmailService {
 
         try {
             mailSender.send(message);
+            LOGGER.info("SMTP verification email send completed to={} elapsedMs={}", toEmail, elapsedMillis(startedAt));
         } catch (MailException ex) {
-            LOGGER.warn("Could not send verification email to {}. Verification code is {}", toEmail, code, ex);
+            LOGGER.warn("SMTP verification email send failed to={} elapsedMs={}. Verification code is {}", toEmail, elapsedMillis(startedAt), code, ex);
         }
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
     }
 }

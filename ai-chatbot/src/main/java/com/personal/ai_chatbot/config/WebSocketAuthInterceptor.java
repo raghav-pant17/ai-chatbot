@@ -3,6 +3,8 @@ package com.personal.ai_chatbot.config;
 import com.personal.ai_chatbot.dto.AuthenticatedUser;
 import com.personal.ai_chatbot.enums.UserRole;
 import com.personal.ai_chatbot.service.AuthTokenService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.simp.stomp.StompCommand;
@@ -15,6 +17,8 @@ import java.security.Principal;
 
 @Component
 public class WebSocketAuthInterceptor implements ChannelInterceptor {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(WebSocketAuthInterceptor.class);
 
     private final AuthTokenService authTokenService;
 
@@ -29,9 +33,20 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
             return message;
         }
 
+        LOGGER.info(
+                "WebSocket interceptor received command={} destination={} sessionId={}",
+                accessor.getCommand(),
+                accessor.getDestination(),
+                accessor.getSessionId());
+
         if (StompCommand.CONNECT.equals(accessor.getCommand())) {
             AuthenticatedUser authenticatedUser = authTokenService.validateAccessToken(extractBearerToken(accessor));
             accessor.setUser(new StompAuthenticatedUser(authenticatedUser));
+            LOGGER.info(
+                    "WebSocket connection authenticated sessionId={} userId={} role={}",
+                    accessor.getSessionId(),
+                    authenticatedUser.userId(),
+                    authenticatedUser.role());
             return message;
         }
 
@@ -54,15 +69,35 @@ public class WebSocketAuthInterceptor implements ChannelInterceptor {
         String destination = accessor.getDestination();
         Principal user = accessor.getUser();
         if (destination == null || user == null) {
+            LOGGER.warn(
+                    "WebSocket send rejected reason=missing_destination_or_user sessionId={} destination={}",
+                    accessor.getSessionId(),
+                    destination);
             throw new IllegalArgumentException("Authenticated WebSocket user is required.");
         }
 
         UserRole role = user instanceof StompAuthenticatedUser stompUser ? stompUser.role() : null;
         if ("/app/chat.sendMessage".equals(destination) && role != UserRole.CUSTOMER) {
+            LOGGER.warn(
+                    "WebSocket send rejected reason=customer_role_required sessionId={} destination={} role={}",
+                    accessor.getSessionId(),
+                    destination,
+                    role);
             throw new IllegalArgumentException("Customer token is required.");
         }
         if ("/app/admin.reply".equals(destination) && role != UserRole.ADMIN) {
+            LOGGER.warn(
+                    "WebSocket send rejected reason=admin_role_required sessionId={} destination={} role={}",
+                    accessor.getSessionId(),
+                    destination,
+                    role);
             throw new IllegalArgumentException("Admin token is required.");
         }
+        LOGGER.info(
+                "WebSocket send accepted sessionId={} destination={} user={} role={}",
+                accessor.getSessionId(),
+                destination,
+                user.getName(),
+                role);
     }
 }
