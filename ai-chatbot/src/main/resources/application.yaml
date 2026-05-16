@@ -14,11 +14,14 @@ spring:
     open-in-view: false
     properties:
       hibernate:
+        default_schema: ${APP_DB_SCHEMA:chatbot_app}
         format_sql: true
   flyway:
     enabled: true
     locations: classpath:db/migration
     baseline-on-migrate: true
+    default-schema: ${FLYWAY_HISTORY_SCHEMA:chatbot_infra}
+    schemas: ${FLYWAY_SCHEMAS:chatbot_infra,chatbot_app}
   data:
     redis:
       host: ${REDIS_HOST:localhost}
