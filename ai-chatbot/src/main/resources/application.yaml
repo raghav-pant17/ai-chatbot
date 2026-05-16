@@ -42,6 +42,9 @@ spring:
           auth: true
           starttls:
             enable: true
+          connectiontimeout: ${MAIL_CONNECTION_TIMEOUT_MS:5000}
+          timeout: ${MAIL_READ_TIMEOUT_MS:10000}
+          writetimeout: ${MAIL_WRITE_TIMEOUT_MS:10000}
 
 chatbot:
   session-ttl-minutes: ${SESSION_TTL_MINUTES:30}
